@@ -1,0 +1,91 @@
+# .github/workflows/manual-build.yml
+
+name: Manual Build for Specific Platforms
+
+# 1. 设置为手动触发 (workflow_dispatch)
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-package:
+    name: Build for ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest # 使用最新的Ubuntu环境进行构建
+
+    # 2. 精简构建矩阵，只保留 windows 和 linux 的 amd64 版本
+    strategy:
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            asset_ext: .exe
+          - goos: linux
+            goarch: amd64
+            asset_ext: ""
+
+    steps:
+      # 步骤1：检出代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # 获取所有历史记录，以便生成正确的版本号
+          fetch-depth: 0
+
+      # 步骤2：设置Go语言环境
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25' # 您可以根据项目需要修改Go版本
+
+      # 步骤3：生成版本号 (基于最新的tag和commit)
+      - name: Generate version
+        id: version
+        run: echo "VERSION=$(git describe --abbrev=7 --tags)" >> $GITHUB_OUTPUT
+
+      # 步骤4：下载最新的资源文件
+      - name: Download GeoIP & GeoSite
+        run: |
+          echo "Downloading latest geoip.dat and geosite.dat..."
+          # 从v2fly/geoip下载geoip.dat
+          curl -Lo geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
+          # 从v2fly/domain-list-community下载geosite.dat
+          curl -Lo geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+          ls -l # 确认文件已下载
+
+      # 步骤5：构建可执行文件
+      - name: Build Xray-core
+        env:
+          # 从矩阵中获取操作系统和架构
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          # 构建命令，并将版本信息注入
+          go build -v -trimpath -o xray${{ matrix.asset_ext }} \
+          -ldflags "-s -w -buildid= -X github.com/xtls/xray-core/core.version=${{ steps.version.outputs.VERSION }}" \
+          ./main
+
+      # 步骤6：打包文件为zip压缩包
+      - name: Package files
+        run: |
+          # 将可执行文件、资源文件和文档打包
+          # 创建一个临时目录来组织文件结构
+          mkdir -p release_package
+          mv xray${{ matrix.asset_ext }} release_package/
+          mv geoip.dat geosite.dat release_package/
+          # 复制一些常见的文档文件（如果存在）
+          cp -f README.md release_package/ || true
+          cp -f LICENSE release_package/ || true
+          
+          # 创建zip包
+          cd release_package
+          zip -r ../Xray-${{ matrix.goos }}-${{ matrix.goarch }}.zip .
+          cd ..
+          echo "PACKAGE_NAME=Xray-${{ matrix.goos }}-${{ matrix.goarch }}.zip" >> $GITHUB_ENV
+          
+      # 步骤7：上传构建产物 (Artifact)
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # 上传的产物名称
+          name: xray-build-${{ matrix.goos }}-${{ matrix.goarch }}
+          # 要上传的文件路径
+          path: ${{ env.PACKAGE_NAME }}
